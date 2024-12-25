@@ -57,6 +57,41 @@ class CryptoDataCollector:
             Column('last_updated', DateTime)
         )
 
+        metadata.create_all(self.engine)
+        
+
+    def get_available_cryptocurrencies(self, page: int = 1, per_page: int = 250) -> List[Dict]:
+        """
+        Fetch list of available cryptocurrencies from CoinGecko.
+        
+        Args:
+            page: Page number for pagination
+            per_page: Number of results per page
+            
+        Returns:
+            List of cryptocurrency dictionaries containing id, symbol, and name
+        """
+        try:
+            endpoint = f"{self.base_url}/coins/markets"
+            params = {
+                "vs_currency": "usd",
+                "order": "market_cap_desc",
+                "per_page": per_page,
+                "page": page,
+                "sparkline": False
+            }
+
+            response = requests.get(endpoint, params=params)
+            response.raise_for_status()
+
+            coins = response.json()
+            self.logger.info(f"successfully fetched {len(coins)} cryptocurrencies")
+            return coins
+        
+        except Exception as e:
+            self.logger.error(f"Error fetching available cryptocurrencies: {str(e)}")
+            return []
+        
 
     def fetch_crypto_prices(self, crypto_ids: List[str], days: str = "max") -> Dict:
         """
@@ -83,18 +118,18 @@ class CryptoDataCollector:
 
                 response = requests.get(endpoint, params=params)
                 response.raise_for_status()
-
                 data = response.json()
 
-                # Convert to DataFrame
-                df = pd.DataFrame(data["prices"], columns=["timestamp", "price"])
-                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-                df.set_index("timestamp", inplace=True)
+                # Create DataFrame for all available data
+                df = pd.DataFrame(index=pd.to_datetime([x[0] for x in data["prices"]], unit="ms"))
+                df["price"] = [x[1] for x in data["prices"]]
+                df["market_cap"] = [x[1] for x in data["market_caps"]]
+                df["volume"] = [x[1] for x in data["total_volumes"]]
+                df["crypto_id"] = crypto_id
 
                 all_crypto_data[crypto_id] = df
 
                 time.sleep(1.5)
-
                 self.logger.info(f"Successfully fetched data for {crypto_id}")
 
             except Exception as e:
