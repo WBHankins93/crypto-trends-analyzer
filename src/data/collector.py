@@ -4,10 +4,15 @@ from datetime import datetime, timedelta
 import logging
 import time
 import os
+import asyncio
+import aiohttp
 from typing import List, Dict, Optional
 from sqlalchemy import create_engine, Table, Column, Float, DateTime, String, MetaData
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class CryptoDataCollector:
     def __init__(self, db_url: str = "sqlite:///crypto_data.db", api_key: Optional[str] = None):
@@ -23,15 +28,17 @@ class CryptoDataCollector:
         """
         Configure logging for the data collector
         """
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler('crypto_collector.log'),
-                logging.StreamHandler()
-            ]
-        )
+        if not logging.getLogger().hasHandlers():
+            logging.basicConfig(
+                level=logging.INFO,
+                format='%(asctime)s - %(levelname)s - %(message)s',
+                handlers=[
+                    logging.FileHandler('crypto_collector.log'),
+                    logging.StreamHandler()
+                ]
+            )
         self.logger = logging.getLogger(__name__)
+
     
 
     def setup_database(self):
@@ -83,7 +90,7 @@ class CryptoDataCollector:
             }
             headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
-            response = requests.get(endpoint, params=params)
+            response = requests.get(endpoint, params=params, headers=headers if self.api_key else None)
             response.raise_for_status()
 
             coins = response.json()
@@ -95,21 +102,8 @@ class CryptoDataCollector:
             return []
         
 
-    def fetch_crypto_prices(self, crypto_ids: List[str], days: str = "max") -> Dict:
-        """
-        Fetch historical price data for specified cryptocurrencies.
-        
-        Args:
-            crypto_ids: List of cryptocurrency IDs (e.g., ['bitcoin', 'ethereum'])
-            days: Number of days of historical data to fetch
-        
-        Returns:
-            Dictionary containing price data for each cryptocurrency
-        """
-
-        all_crypto_data = {}
-
-        for crypto_id in crypto_ids:
+    async def fetch_crypto_prices(self, crypto_ids: List[str], days: str = "max") -> Dict[str, pd.DataFrame]:
+        async def fetch_single_crypto(session, crypto_id):
             try:
                 endpoint = f"{self.base_url}/coins/{crypto_id}/market_chart"
                 params = {
@@ -119,27 +113,38 @@ class CryptoDataCollector:
                 }
                 headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
-                response = requests.get(endpoint, params=params)
-                response.raise_for_status()
-                data = response.json()
+                async with session.get(endpoint, params=params, headers=headers) as response:
+                    if response.status == 429:  # Too Many Requests
+                        retry_after = int(response.headers.get("Retry-After", 2))  # Backoff
+                        self.logger.warning(f"Rate limit hit for {crypto_id}. Retrying after {retry_after} seconds...")
+                        await asyncio.sleep(retry_after)
+                        return await fetch_single_crypto(session, crypto_id)  # Retry the request
 
-                # Create DataFrame for all available data
-                df = pd.DataFrame(index=pd.to_datetime([x[0] for x in data["prices"]], unit="ms"))
-                df["price"] = [x[1] for x in data["prices"]]
-                df["market_cap"] = [x[1] for x in data["market_caps"]]
-                df["volume"] = [x[1] for x in data["total_volumes"]]
-                df["crypto_id"] = crypto_id
+                    response.raise_for_status()
+                    data = await response.json()
 
-                all_crypto_data[crypto_id] = df
+                    # Create DataFrame
+                    df = pd.DataFrame(index=pd.to_datetime([x[0] for x in data["prices"]], unit="ms"))
+                    df["price"] = [round(x[1], 2) for x in data["prices"]]
+                    df["market_cap"] = [round(x[1], 2) for x in data["market_caps"]]
+                    df["volume"] = [round(x[1], 2) for x in data["total_volumes"]]
+                    df["crypto_id"] = crypto_id
 
-                time.sleep(1.5)
-                self.logger.info(f"Successfully fetched data for {crypto_id}")
+                    self.logger.info(f"Successfully fetched data for {crypto_id}")
+                    return crypto_id, df
 
             except Exception as e:
                 self.logger.error(f"Error fetching data for {crypto_id}: {str(e)}")
-                continue
+                return crypto_id, pd.DataFrame()  # Return empty DataFrame on error
 
-        return all_crypto_data
+        async with aiohttp.ClientSession() as session:
+            # Fetch all cryptocurrencies concurrently
+            tasks = [fetch_single_crypto(session, crypto_id) for crypto_id in crypto_ids]
+            results = await asyncio.gather(*tasks)
+
+        # Combine results into a dictionary
+        return {crypto_id: df for crypto_id, df in results}
+
     
 
     def save_to_database(self, crypto_data: Dict) -> None:
@@ -198,7 +203,7 @@ class CryptoDataCollector:
         Returns:
             DataFrame containing price data
         """
-        query: f"SELECT * FROM crypto_prices"
+        query = f"SELECT * FROM crypto_prices"
         conditions = []
 
         if crypto_ids:
@@ -277,17 +282,25 @@ class CryptoDataCollector:
             session.close()
 
 
-        # Example usage
 if __name__ == "__main__":
-    collector = CryptoDataCollector()
     
-    # Collect data for top 100 Cryptocurrencies 
-    collector.update_all_crypto_data(top_n=10)
-    
-    # Get specific crypto data
-    crypto_data = collector.get_crypto_data(
-        crypto_ids=['bitcoin', 'ethereum', 'doge'],
+    from datetime import datetime, timedelta
+
+    api_key = os.getenv("COINGECKO_API_KEY")
+    collector = CryptoDataCollector(api_key=api_key)
+
+    # Example usage
+    crypto_ids = ["bitcoin", "ethereum", "dogecoin", "ripple"]
+
+    # Asynchronous fetching
+    crypto_data = asyncio.run(collector.fetch_crypto_prices(crypto_ids, days="30"))
+
+    # Save to database
+    collector.save_to_database(crypto_data)
+
+    # Get data from the database
+    data = collector.get_crypto_data(
+        crypto_ids=crypto_ids,
         start_date=datetime.now() - timedelta(days=30)
     )
-
-    print(crypto_data.head())
+    print(data.head())
