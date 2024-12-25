@@ -10,8 +10,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
 class CryptoDataCollector:
-    def __init__(self, db_url: str = "sqlite:///crypto_data.db"):
+    def __init__(self, db_url: str = "sqlite:///crypto_data.db", api_key: Optional[str] = None):
         self.base_url = "https://api.coingecko.com/api/v3"
+        self.api_key = api_key
         self.engine = create_engine(db_url)
         self.setup_logging()
         self.setup_database()
@@ -80,6 +81,7 @@ class CryptoDataCollector:
                 "page": page,
                 "sparkline": False
             }
+            headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
             response = requests.get(endpoint, params=params)
             response.raise_for_status()
@@ -115,6 +117,7 @@ class CryptoDataCollector:
                     "days": days,
                     "interval": "daily"
                 }
+                headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
                 response = requests.get(endpoint, params=params)
                 response.raise_for_status()
@@ -139,20 +142,152 @@ class CryptoDataCollector:
         return all_crypto_data
     
 
-    
+    def save_to_database(self, crypto_data: Dict) -> None:
+        """
+        Save cryptocurrency data to database.
         
+        Args:
+            crypto_data: Dictionary containing cryptocurrency price data
+        """
+        Session = sessionmaker(bind=self.engine)
+        session = Session()
+
+        try:
+            for crypto_id, df in crypto_data.items():
+                records = []
+                for timestamp, row in df.iterrows():
+                    record = {
+                        'timestamp': timestamp,
+                        'crypto_id': crypto_id,
+                        'price': row['price'],
+                        'market_cap': row['market_cap'],
+                        'volume': row['volume']
+                    }
+                    records.append(record)
+
+                if records:
+                    session.execute(
+                        self.prices_table.insert().prefix_with('OR REPLACE'),
+                        records
+                    )
+
+            session.commit()
+            self.logger.info(f"Successfully saved data for {len(crypto_data)} cryptocurrencies")
+
+        except SQLAlchemyError as e:
+            session.rollback()
+            self.logger.error(f"Database error: {str(e)}")
+        finally:
+            session.close()
+
+
+    def get_crypto_data(
+        self,
+        crypto_ids: Optional[List[str]] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> pd.DataFrame:
+        """
+        Retrieve cryptocurrency data from database.
+        
+        Args:
+            crypto_ids: List of cryptocurrency IDs (None for all)
+            start_date: Start date for filtering
+            end_date: End date for filtering
+            
+        Returns:
+            DataFrame containing price data
+        """
+        query: f"SELECT * FROM crypto_prices"
+        conditions = []
+
+        if crypto_ids:
+            crypto_list = ", ".join(f"'{id}'" for id in crypto_ids)
+            conditions.append(f"crypto_id IN ({crypto_list})")
+
+        if start_date:
+            conditions.append(f"timestamp >= '{start_date}'")
+        
+        if end_date:
+            conditions.append(f"timestamp >= '{end_date}'")
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        try:
+            df = pd.read_sql(query, self.engine)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df.set_index('timestamp', inplace=True)
+            return df
+
+        except Exception as e:
+            self.logger.error(f"Error retrieving data from database: {str(e)}")
+            return pd.DataFrame()
+    
+
+    def update_all_crypto_data(self, top_n: int = 100, days: str = "max") -> None:
+        """
+        Update database with latest data for top N cryptocurrencies.
+        
+        Args:
+            top_n: Number of top cryptocurrencies to fetch
+            days: Number of days of historical data to fetch
+        """
+
+        coins = self.get_available_cryptocurrencies(per_page=top_n)
+        crypto_ids = [coin['id'] for coin in coins]
+
+        crypto_data = self.fetch_crypto_prices(crypto_ids, days=days)
+        self.save_to_database(crypto_data)
+
+        self.update_metadata(coins)
+
+    
+    def update_metadata(self, coins: List[Dict]) -> None:
+        """
+        Update cryptocurrency metadata in database.
+        
+        Args:
+            coins: List of cryptocurrency dictionaries
+        """
+        Session = sessionmaker(bind=self.engine)
+        session = Session()
+
+        try:
+            for coin in coins:
+                record = {
+                    'crypto_id': coin['id'],
+                    'name': coin['name'],
+                    'symbol': coin['symbol'],
+                    'last_updated': datetime.now()
+                }
+                
+                session.execute(
+                    self.metadata_table.insert().prefix_with('OR REPLACE'),
+                    record
+                )
+                
+            session.commit()
+            self.logger.info(f"Successfully updated metadata for {len(coins)} cryptocurrencies")
+            
+        except SQLAlchemyError as e:
+            session.rollback()
+            self.logger.error(f"Database error updating metadata: {str(e)}")
+        finally:
+            session.close()
+
 
         # Example usage
 if __name__ == "__main__":
     collector = CryptoDataCollector()
     
     # Collect data for top 100 Cryptocurrencies 
-    collector.update_all_crypto_data(top_n=100)
+    collector.update_all_crypto_data(top_n=10)
     
     # Get specific crypto data
-    btc_eth_data = collector.get_crypto_data(
-        crypto_ids=['bitcoin', 'ethereum'],
+    crypto_data = collector.get_crypto_data(
+        crypto_ids=['bitcoin', 'ethereum', 'doge'],
         start_date=datetime.now() - timedelta(days=30)
     )
 
-    print(btc_eth_data.head())
+    print(crypto_data.head())
