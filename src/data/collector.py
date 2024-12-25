@@ -1,20 +1,21 @@
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
+import logging
 import time
 import os
-from typing import List, Dict
-import logging
+from typing import List, Dict, Optional
+from sqlalchemy import create_engine, Table, Column, Float, DateTime, String, MetaData
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import sessionmaker
 
 class CryptoDataCollector:
-    def __init__(self, base_path: str = "data"):
+    def __init__(self, db_url: str = "sqlite:///crypto_data.db"):
         self.base_url = "https://api.coingecko.com/api/v3"
-        self.base_path = base_path
+        self.engine = create_engine(db_url)
         self.setup_logging()
+        self.setup_database()
 
-    # Create data directory if it doesn't exist
-        if not os.path.exists(base_path):
-            os.makedirs(base_path)
 
 
     def setup_logging(self):
@@ -30,6 +31,31 @@ class CryptoDataCollector:
             ]
         )
         self.logger = logging.getLogger(__name__)
+    
+
+    def setup_database(self):
+        metadata = MetaData()
+
+        # Table for storing crypto price data
+        self.prices_table = Table(
+            'crypto_prices', 
+            metadata,
+            Column('timestamp', DateTime, primary_key=True),
+            Column('crypto_id', String, primary_key=True),
+            Column('price', Float),
+            Column('market_cap', Float),
+            Column('volume', Float)
+        )
+        
+        # Table for storing crypto metadata
+        self.metadata_table = Table(
+            'crypto_metadata',
+            metadata,
+            Column('crypto_id', String, primary_key=True),
+            Column('name', String),
+            Column('symbol', String),
+            Column('last_updated', DateTime)
+        )
 
 
     def fetch_crypto_prices(self, crypto_ids: List[str], days: str = "max") -> Dict:
@@ -92,6 +118,7 @@ class CryptoDataCollector:
             filepath = os.path.join(self.base_path, filename)
 
             try:
+                print(f"Saving file for {crypto_id} to {filepath}")
                 df.to_csv(filepath)
                 self.logger.info(f"Successfully saved data to {filepath}")
             except Exception as e:
@@ -124,13 +151,13 @@ class CryptoDataCollector:
 if __name__ == "__main__":
     collector = CryptoDataCollector()
     
-    # Fetch data for Bitcoin and Ethereum
-    crypto_ids = ["bitcoin", "ethereum"]
-    crypto_data = collector.fetch_crypto_prices(crypto_ids, days="365")
+    # Collect data for top 100 Cryptocurrencies 
+    collector.update_all_crypto_data(top_n=100)
     
-    # Save to CSV
-    collector.save_to_csv(crypto_data)
-    
-    # Load Bitcoin data
-    btc_data = collector.load_from_csv("bitcoin")
-    print(btc_data.head())
+    # Get specific crypto data
+    btc_eth_data = collector.get_crypto_data(
+        crypto_ids=['bitcoin', 'ethereum'],
+        start_date=datetime.now() - timedelta(days=30)
+    )
+
+    print(btc_eth_data.head())
