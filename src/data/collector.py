@@ -58,7 +58,7 @@ class CryptoDataCollector:
         )
 
         metadata.create_all(self.engine)
-        
+
 
     def get_available_cryptocurrencies(self, page: int = 1, per_page: int = 250) -> List[Dict]:
         """
@@ -139,47 +139,7 @@ class CryptoDataCollector:
         return all_crypto_data
     
 
-    def save_to_csv(self, crypto_data: Dict, suffix: str = "") -> None:
-        """
-        Save cryptocurrency data to CSV files.
-        
-        Args:
-            crypto_data: Dictionary containing cryptocurrency price data
-            suffix: Optional suffix for filename
-        """
-
-        for crypto_id, df in crypto_data.items():
-            filename = f"{crypto_id}_prices{suffix}.csv"
-            filepath = os.path.join(self.base_path, filename)
-
-            try:
-                print(f"Saving file for {crypto_id} to {filepath}")
-                df.to_csv(filepath)
-                self.logger.info(f"Successfully saved data to {filepath}")
-            except Exception as e:
-                self.logger.error(f"Error saving data for {crypto_id}: {str(e)}")
-
-    def load_from_csv(self, crypto_id: str, suffix: str = "") -> pd.DataFrame:
-        """
-        Load cryptocurrency data from CSV file.
-        
-        Args:
-            crypto_id: Cryptocurrency ID
-            suffix: Optional suffix for filename
-        
-        Returns:
-            DataFrame containing price data
-        """
-        filename = f"{crypto_id}_prices{suffix}.csv"
-        filepath = os.path.join(self.base_path, filename)
-
-        try:
-            df = pd.read_csv(filepath, index_col=0, parse_dates=True)
-            self.logger.info(f"Successfully loaded data from {filepath}")
-            return df
-        except Exception as e:
-            self.logger.error(f"Error loading data for {crypto_id}: {str(e)}")
-            return None
+    
         
 
         # Example usage
