@@ -59,29 +59,23 @@ class CryptoDataCollector:
             'crypto_prices', 
             metadata,
             Column('timestamp', DateTime, primary_key=True),
-            Column('crypto_id', String, primary_key=True),
+            Column('symbol', String, primary_key=True),
+            Column('name', String),
             Column('price', Float),
             Column('market_cap', Float),
-            Column('volume', Float),
+            Column('volume_24h', Float),
+            Column('volume_change_24h', Float),
+            Column('volume_change_30d', Float),
             Column('percent_change_1h', Float),
             Column('percent_change_24h', Float),
             Column('percent_change_7d', Float),
             Column('percent_change_60d', Float),
-            Column('percent_change_90d', Float)
-        )
-        
-        # Table for storing crypto metadata
-        self.metadata_table = Table(
-            'crypto_metadata',
-            metadata,
-            Column('crypto_id', String, primary_key=True),
-            Column('name', String),
-            Column('symbol', String),
+            Column('percent_change_90d', Float),
+            Column('percent_change_ytd', Float),
             Column('circulating_supply', Float),
             Column('total_supply', Float),
             Column('max_supply', Float),
-            Column('num_market_pairs', Integer),
-            Column('last_updated', DateTime)
+            Column('num_market_pairs', Integer)
         )
 
         metadata.create_all(self.engine)
@@ -105,48 +99,45 @@ class CryptoDataCollector:
             # Process timestamp
             current_time = datetime.now()
             
-            # Prepare price data
-            price_records = []
-            metadata_records = []
+            # Prepare records
+            records = []
             
             for _, row in df.iterrows():
                 # Price data record
-                price_record = {
+                record = {
                     'timestamp': current_time,
-                    'crypto_id': row['Symbol'].lower(),  # Using symbol as crypto_id
+                    'symbol': row['Symbol'],
+                    'name': row['Name'],
                     'price': float(row['Price']),
                     'market_cap': float(row['Market Cap']),
-                    'volume': float(row['Volume (24h)']),
+                    'volume_24h': float(row['Volume (24h)']),
                     'percent_change_1h': float(row['1h %']),
                     'percent_change_24h': float(row['24h %']),
                     'percent_change_7d': float(row['7d %']),
                     'percent_change_60d': float(row['60d %']),
-                    'percent_change_90d': float(row['90d %'])
-                }
-                price_records.append(price_record)
-                
-                # Metadata record
-                metadata_record = {
-                    'crypto_id': row['Symbol'].lower(),
-                    'name': row['Name'],
-                    'symbol': row['Symbol'],
+                    'percent_change_90d': float(row['90d %']),
+                    'percent_change_ytd': float(row['YTD %']),
+                    'market_cap': float(row['Market Cap']),
+                    'volume_24h': float(row['Volume (24h)']),
+                    'volume_change_24h': float(row['Volume Change (24h)']),
+                    'volume_change_30d': float(row['Volume Change (30d)']),
                     'circulating_supply': float(row['Circulating Supply']),
                     'total_supply': float(row['Total Supply']) if pd.notna(row['Total Supply']) else None,
                     'max_supply': float(row['Max Supply']) if pd.notna(row['Max Supply']) else None,
-                    'num_market_pairs': int(row['Num Market Pairs']),
-                    'last_updated': current_time
+                    'num_market_pairs': int(row['Num Market Pairs'])
                 }
-                metadata_records.append(metadata_record)
+                records.append(record)
+                
 
             # Save to database
-            self.save_to_database(price_records, metadata_records)
-            self.logger.info(f"Successfully processed {len(price_records)} cryptocurrencies from CSV")
+            self.save_to_database(records)
+            self.logger.info(f"Successfully processed {len(records)} cryptocurrencies from CSV")
 
         except Exception as e:
             self.logger.error(f"Error processing CSV file: {str(e)}")
             raise
 
-    def save_to_database(self, price_records: List[dict], metadata_records: List[dict]) -> None:
+    def save_to_database(self, records: List[dict]) -> None:
         """
         Save cryptocurrency data to database.
         
@@ -158,18 +149,11 @@ class CryptoDataCollector:
         session = Session()
 
         try:
-            # Save price data
-            if price_records:
+            # Save data
+            if records:
                 session.execute(
                     self.prices_table.insert().prefix_with('OR REPLACE'),
-                    price_records
-                )
-
-            # Save metadata
-            if metadata_records:
-                session.execute(
-                    self.metadata_table.insert().prefix_with('OR REPLACE'),
-                    metadata_records
+                    records
                 )
 
             session.commit()
@@ -200,14 +184,7 @@ class CryptoDataCollector:
             DataFrame containing price data
         """
         
-        query = query = """
-            SELECT 
-                p.*,
-                m.name,
-                m.symbol
-            FROM crypto_prices p
-            LEFT JOIN crypto_metadata m ON p.crypto_id = m.crypto_id
-        """
+        query = query = "SELECT * FROM crypto_prices"
         conditions = []
 
         if crypto_ids:
@@ -278,17 +255,19 @@ if __name__ == "__main__":
     # Format the numeric columns
     formatted_data = top_10_crypto.copy()
     formatted_data['market_cap'] = formatted_data['market_cap'].apply(format_number)
-    formatted_data['volume'] = formatted_data['volume'].apply(format_number)
+    formatted_data['volume_24h'] = formatted_data['volume_24h'].apply(format_number)
     formatted_data['price'] = formatted_data['price'].apply(format_number)
     
     # Format percentage columns
-    percentage_columns = ['percent_change_1h', 'percent_change_24h', 'percent_change_7d']
+    percentage_columns = ['percent_change_1h', 'percent_change_24h', 'percent_change_7d', 
+                         'percent_change_60d', 'percent_change_90d', 'percent_change_ytd']
+    
     for col in percentage_columns:
         formatted_data[col] = formatted_data[col].apply(format_percentage)
     
-    # Select and reorder columns for display
+    # # Select and reorder columns for display
     columns_to_display = [
-        'name', 'symbol', 'price', 'market_cap', 'volume',
+        'name', 'symbol', 'price', 'market_cap', 'volume_24h',
         'percent_change_1h', 'percent_change_24h', 'percent_change_7d'
     ]
 
