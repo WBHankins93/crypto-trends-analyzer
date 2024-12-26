@@ -1,17 +1,41 @@
 import pandas as pd
 from datetime import datetime, timedelta
 import logging
+import os
+from pathlib import Path
 from typing import Optional, List
 from sqlalchemy import create_engine, Table, Column, Float, DateTime, String, MetaData, Integer
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
 class CryptoDataCollector:
-    def __init__(self, db_url: str = "sqlite:///crypto_data.db"):
+    def __init__(self, project_root: Optional[str] = None):
         """Initialize the CryptoDataCollector with database connection."""
-        self.engine = create_engine(db_url)
+        if project_root is None:
+            # Assume you are in src/data and need to move up two levels
+            self.project_root = Path(__file__).parent.parent.parent
+        else:
+            self.project_root = Path(project_root)
+
+        # Define paths
+        self.data_dir = self.project_root / 'data'
+        self.db_path = self.project_root / 'crypto_data.db'
+
+        # Create data directory if one does not exist
+        self.data_dir.mkdir(exist_ok=True)
+
+        if self.db_path.exists():
+            try:
+                self.db_path.unlink()
+                print(f"Existing database removed: {self.db_path}")
+            except Exception as e:
+                print(f"Error removing database: {str(e)}")
+
+        # Initialize database connection
+        self.engine = create_engine(f"sqlite:///{self.db_path}")
         self.setup_logging()
         self.setup_database()
+
 
     def setup_logging(self):
         """Configure logging for the data collector."""
@@ -61,17 +85,22 @@ class CryptoDataCollector:
         )
 
         metadata.create_all(self.engine)
+        self.logger.info("Database tables created successfully")
 
     def process_csv_data(self, file_path: str) -> None:
         """
         Process cryptocurrency data from CSV file and store in database.
-        
-        Args:
-            file_path: Path to the CSV file containing crypto data
         """
+        # Convert relative path to absolute using project root
+        full_path = self.project_root / file_path
+
         try:
+            self.logger.info(f"Processing CSV file: {full_path}")
+            if not full_path.exists():
+                raise FileNotFoundError(f"CSV file not found: {full_path}")
+            
             # Read CSV file
-            df = pd.read_csv(file_path)
+            df = pd.read_csv(full_path)
             
             # Process timestamp
             current_time = datetime.now()
@@ -170,6 +199,7 @@ class CryptoDataCollector:
         Returns:
             DataFrame containing price data
         """
+        
         query = f"SELECT * FROM crypto_prices"
         conditions = []
 
@@ -199,13 +229,21 @@ class CryptoDataCollector:
 if __name__ == "__main__":
     # Example usage
     collector = CryptoDataCollector()
+
+    # Configure pandas display options
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', None)
     
     # Process CSV file
     collector.process_csv_data('data/crypto_trends_insights_2024.csv')
     
-    # Get data for specific cryptocurrencies
+    # Get data for all cryptocurrencies
     data = collector.get_crypto_data(
-        crypto_ids=['btc', 'eth'],
         start_date=datetime.now() - timedelta(days=1)
     )
-    print(data.head())
+    # print(data.head().to_string())
+
+    # Sort by market cap and get top 10
+    top_10_crypto = data.sort_values('market_cap', ascending=False).head(25)
+    print("\nTop 10 Cryptocurrencies by Market Cap:")
+    print(top_10_crypto.to_string())
