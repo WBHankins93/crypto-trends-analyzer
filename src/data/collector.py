@@ -200,7 +200,14 @@ class CryptoDataCollector:
             DataFrame containing price data
         """
         
-        query = f"SELECT * FROM crypto_prices"
+        query = query = """
+            SELECT 
+                p.*,
+                m.name,
+                m.symbol
+            FROM crypto_prices p
+            LEFT JOIN crypto_metadata m ON p.crypto_id = m.crypto_id
+        """
         conditions = []
 
         if crypto_ids:
@@ -211,7 +218,7 @@ class CryptoDataCollector:
             conditions.append(f"timestamp >= '{start_date}'")
         
         if end_date:
-            conditions.append(f"timestamp <= '{end_date}'")  # Fixed: Changed >= to <=
+            conditions.append(f"timestamp <= '{end_date}'")
 
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
@@ -227,12 +234,34 @@ class CryptoDataCollector:
             return pd.DataFrame()
 
 if __name__ == "__main__":
-    # Example usage
+    
     collector = CryptoDataCollector()
 
     # Configure pandas display options
     pd.set_option('display.max_columns', None)
     pd.set_option('display.width', None)
+
+    def format_number(value):
+        """Format large numbers to human-readable format"""
+        if pd.isna(value):
+            return "N/A"
+        
+        abs_value= abs(value)
+        if abs_value >= 1_000_000_000:   # Billions
+            return f"${value/1_000_000_000:.2f}B"
+        elif abs_value >= 1_000_000:     # Millions
+            return f"${value/1_000_000:.2f}M"
+        elif abs_value >= 1_000:         # Thousands
+            return f"${value/1_000:.2f}K"
+        else:
+            return f"${value:.2f}"
+    
+    def format_percentage(value):
+        """Format percentage values"""
+        if pd.isna(value):
+            return "N/A"
+        return f"{value:.2f}%"
+    
     
     # Process CSV file
     collector.process_csv_data('data/crypto_trends_insights_2024.csv')
@@ -241,9 +270,28 @@ if __name__ == "__main__":
     data = collector.get_crypto_data(
         start_date=datetime.now() - timedelta(days=1)
     )
-    # print(data.head().to_string())
 
     # Sort by market cap and get top 10
     top_10_crypto = data.sort_values('market_cap', ascending=False).head(25)
-    print("\nTop 10 Cryptocurrencies by Market Cap:")
-    print(top_10_crypto.to_string())
+
+
+    # Format the numeric columns
+    formatted_data = top_10_crypto.copy()
+    formatted_data['market_cap'] = formatted_data['market_cap'].apply(format_number)
+    formatted_data['volume'] = formatted_data['volume'].apply(format_number)
+    formatted_data['price'] = formatted_data['price'].apply(format_number)
+    
+    # Format percentage columns
+    percentage_columns = ['percent_change_1h', 'percent_change_24h', 'percent_change_7d']
+    for col in percentage_columns:
+        formatted_data[col] = formatted_data[col].apply(format_percentage)
+    
+    # Select and reorder columns for display
+    columns_to_display = [
+        'name', 'symbol', 'price', 'market_cap', 'volume',
+        'percent_change_1h', 'percent_change_24h', 'percent_change_7d'
+    ]
+
+
+    print("\nTop Cryptocurrencies by Market Cap:")
+    print(formatted_data[columns_to_display].to_string())
